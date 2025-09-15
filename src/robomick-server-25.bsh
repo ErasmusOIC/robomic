@@ -1,0 +1,847 @@
+import ij.*;
+import ij.io.*;
+import ij.process.*;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+
+static boolean goquit = false;
+
+
+class Device {
+	private static final boolean ROTATE = true;  // to orientate "image" equal to "snapped image in micro manager"
+	private boolean do_af = true;
+	public String currentWavelength = "488";
+	public int currentSweep = 1;
+	
+	public double lastX = 0.0;
+	public double lastY = 0.0;
+	public double odo = 0.0;
+	
+	public Device () {
+		print ("INIT DEVICE");
+		setSweep (currentSweep);
+		setChurchWindow (currentWavelength);
+		setChannelSelect (new int [] {0, 1, 0, 0});
+		setChannelIntensity (new int [] {0, 8, 0, 0});
+		setMode ("RCM");
+	}
+	
+	public String currentDateTime () {
+		Calendar cal = Calendar.getInstance ();
+		Date date = cal.getTime ();
+		SimpleDateFormat format = new SimpleDateFormat ("yyyyMMdd-HHmmss");
+		return format.format (date);
+	}
+	
+	public void log (String msg) {
+		BufferedWriter log = null;
+		try {
+			log = new BufferedWriter (new FileWriter ("D:/RoboMick/general.log", true));
+			log.write (currentDateTime () + "\t" + msg + "\r\n");
+			log.flush ();
+			log.close ();
+		}
+		catch (IOException x) {
+			x.printStackTrace ();
+		}
+	}
+	
+	public void logXY (String msg) {
+		BufferedWriter logXY = null;
+		try {
+			logXY = new BufferedWriter (new FileWriter ("D:/RoboMick/data/stage-xy.log", true));
+			logXY.write (currentDateTime () + "\t" + msg + "\r\n");
+			logXY.flush ();
+			logXY.close ();
+		}
+		catch (IOException x) {
+			x.printStackTrace ();
+		}
+	}
+	
+	public void logZ (String msg) {
+		BufferedWriter logZ = null;
+		try {
+			logZ = new BufferedWriter (new FileWriter ("D:/RoboMick/data/stage-z.log", true));
+			logZ.write (currentDateTime () + "\t" + msg + "\r\n");
+			logZ.flush ();
+			logZ.close ();
+		}
+		catch (IOException x) {
+			x.printStackTrace ();
+		}
+	}
+	
+	public void doTest () {
+		print ("doTest");
+		
+		// ...
+	}
+	
+	private int average (short [] arr) {
+		long sum = 0;
+		for (int i = 0; i < arr.length; i++) {
+			sum += arr [i];
+		}
+		int avg = (int) (sum / arr.length);
+		return avg;
+	}
+	
+	private double stdev (short [] arr) {
+		int avg = average (arr);
+		double ss = 0;
+		for (int i = 0; i < arr.length; i++) {
+			ss += (arr [i] - avg) * (arr [i] - avg);
+		}
+		double var = ss / (arr.length - 1);
+		return Math.sqrt (var);
+	}
+	
+	private short [] reducearray (short [] arr, int factor) {
+		int newlen = arr.length / factor;
+		short [] newarr = new short [newlen];
+		for (int i = 0; i < newlen; i++) {
+			newarr [i] = arr [i * factor];
+		}
+		return newarr;
+	}
+	
+	public double findFocus () {
+		// find z-plane with largest stdev
+		log ("findFocus INIT");
+		tt0 = System.currentTimeMillis ();
+		// old scheme:
+		// int [] offsets1 = {-35, -30, -25, -20, -15, -10, -5, 0, +5, +10, +15, +20, +25, +30, +35};
+		// int [] offsets2= {-4, -2, -1, 0, +1, +2, +4};
+		// -> 22 scans
+		//
+		// new scheme:
+		// int [] offsets1 = {-40, -30, -20, -10, 0, +10, +20, +30, +40};
+		// int [] offsets2 = {-4, -2, +2, +4};
+		// -> 13 scans
+		//
+		// results of parameter finetuning:
+		// dim = 768 | f=32 | 22 scans -> 95s
+		// dim = 384 | f=32 | 22 scans  -> 57s
+		// dim = 384 | f=32 | 13 scans  -> 36s
+		// dim = 256 | f=32 | 13 scans  -> 29s
+		// dim = 128 | f=32 | 13 scans  -> 26s
+		// dim = 128 | f=64 | 13 scans  -> 26s
+		int dim = 768;  // dimnsions of scanned image for calc stdev
+		int factor_arr_red = 32;  // reduction factor
+		
+		// workon: wait a few seconds for z move to finish
+		print ("[debug] findFocus z0 = " + getZ ());
+		mmc.sleep (1000);
+		print ("[debug] findFocus z1 = " + getZ ());
+		mmc.sleep (1000);
+		print ("[debug] findFocus z2 = " + getZ ());
+		mmc.sleep (1000);
+		print ("[debug] findFocus z3 = " + getZ ());
+		
+		setSweep (1);
+		
+		
+		double oldz = getZ ();
+		
+		double zbest = oldz;
+		double stdmax = 0;
+		
+		setAF (false);
+		
+		// coarse focusing
+//		int [] offsets1 = {0, 5, -5, 10, -10, 15, -15, 20, -20, 25, -25, 30, -30, 35, -35, 40, -40, 45, -45, 50, -50, 55, -55, 60, -60, 65, -65, 70, -70, 75, -75, 80, -80, 85, -85, 90, -90, 95, -95,
+//		                   100, -100, 105, -105, 110, -110, 115, -115, 120, -120, 125, -125, 130, -130, 135, -135, 140, -140, 145, -145, 150, -150, 155, -155, 160, -160, 165, -165, 170, -170, 175, -175,
+//		                   180, -180, 185, -185, 190, -190, 195, -195, 200, -200};
+//		int [] offsets1 = {0, 5, -5, 10, -10, 15, -15, 20, -20, 25, -25, 30, -30, 35, -35, 40, -40};
+		int [] offsets1 = {0, 5, -5, 10, -10, 15, -15, 20, -20, 25, -25, 30, -30, 35, -35, 40, -40, 45, -45, 50, -50, 55, -55, 60, -60, 65, -65, 70, -70, 75, -75, 80, -80, 85, -85, 90, -90, 95, -95, 100, -100};
+		for (int i = 0; i < offsets1.length; i++) {
+			moveToZ (oldz + offsets1 [i]);
+			imp = snapImage (currentWavelength, 0, 0, dim, dim);
+			ip = imp.getProcessor ();
+			
+			// store image
+			String path = "D:/robomick/findFocus/" + tt0 + "/phase1-" + offsets1 [i] + ".tif";
+			saveImage (imp, path);
+			
+			short [] px = (short []) ip.getPixels ();
+			px = reducearray (px, factor_arr_red);
+			double std = stdev (px);
+			if (std > stdmax) {
+				stdmax = std;
+				zbest = oldz + offsets1 [i];
+			}
+			print (offsets1 [i] + "\t" + (oldz + offsets1 [i]) + "\t" + std + " (curr_best = " + stdmax + " at " + zbest + ")");
+			log ("findFocus phase 1: " + offsets1 [i] + "\t" + (oldz + offsets1 [i]) + "\t" + std);
+		}
+		print ("zbest = " + zbest);
+		log ("findFocus phase 1: zbest = " + zbest);
+		oldz = zbest;
+		
+		
+		// fine focusing
+		int [] offsets2= {-4, -2, +2, +4};
+		for (int i = 0; i < offsets2.length; i++) {
+			moveToZ (oldz + offsets2 [i]);
+			imp = snapImage (currentWavelength, 0, 0, dim, dim);
+			ip = imp.getProcessor ();
+			
+			// store image
+			String path = "D:/robomick/findFocus/" + tt0 + "/phase2-" + offsets2 [i] + ".tif";
+			saveImage (imp, path);
+			
+			short [] px = (short []) ip.getPixels ();
+			px = reducearray (px, factor_arr_red);
+			double std = stdev (px);
+			if (std > stdmax) {
+				stdmax = std;
+				zbest = oldz + offsets2 [i];
+			}
+			print (offsets2 [i] + "\t" + (oldz + offsets2 [i]) + "\t" + std);
+			log ("findFocus phase 2: " + offsets2 [i] + "\t" + (oldz + offsets2 [i]) + "\t" + std);
+		}
+		print ("zbest = " + zbest);
+		log ("findFocus phase 2: zbest = " + zbest);
+		
+		setAF (true);
+		moveToZ (zbest);
+		ip = snapImage (currentWavelength, 0, 0, dim, dim).getProcessor ();
+		
+		tt1 = System.currentTimeMillis ();
+		print ("findFocus duration = " + (tt1 - tt0) + " ms");
+		
+		log ("findFocus EXIT");
+		return zbest;
+	}
+	
+	public void setMode (String mode) {
+		print ("DEBUG: setMode (" + mode + ")");
+		String [] validModes = {"Blue", "Green", "RCM", "Red", "Transmission"};
+		
+		if (Arrays.asList (validModes).contains (mode)) {
+			mmc.setConfig ("Mode", mode);
+			mmc.waitForConfig ("Mode", mode);
+			return;
+		}
+		
+		print ("setMode :: invalid mode: " + mode);
+	}
+	
+	public void setSweep (int sweep) {
+		print ("DEBUG: setSweep (" + sweep + ")");
+		if (sweep == 1 || sweep == 2) {
+			mmc.setConfig ("Sweep Factor", "" + sweep);
+			mmc.waitForConfig ("Sweep Factor", "" + sweep);
+			currentSweep = sweep;
+			return;
+		}
+		
+		print ("setSweep :: invalid sweep: " + sweep);
+	}
+	
+	public void setChurchWindow (String wavelength) {
+		print ("DEBUG: setChurchWindow (" + wavelength + ")");
+		String [] validWl = {"405", "488", "561", "640"};
+		
+		if (Arrays.asList (validWl).contains (wavelength)) {
+			currentWavelength = wavelength;
+			mmc.setConfig("ChurchWindow", wavelength);
+			mmc.waitForConfig("ChurchWindow", wavelength);
+			return;
+		}
+		
+		print ("setChurchWindow :: invalid wavelength: " + wavelength);
+	}
+	
+	public void setChannelSelect (int [] chs) {
+		print ("DEBUG: setChannelSelect (" + Arrays.toString (chs) + ")");
+		if (chs.length != 4) {
+			print ("setChannelSelect :: invalid input");
+			return;
+		}
+		
+		for (int i = 0; i < 4; i++) {
+			String cmd = "L4." + (i + 1) + " Laser " + (i + 1) + " select";
+			mmc.setProperty ("RCM", cmd, chs [i]);
+		}
+	}
+	
+	public void setChannelIntensity (int [] chi) {
+		print ("DEBUG: setChannelIntensity (" + Arrays.toString (chi) + ")");
+		if (chi.length != 4) {
+			print ("setChannelIntensity :: invalid input");
+			return;
+		}
+		
+		for (int i = 0; i < 4; i++) {
+			String cmd = "L6." + (i + 1) + " Laser " + (i + 1) + " power";
+			mmc.setProperty ("RCM", cmd, chi [i]);
+		}
+	}
+	
+	public void setFOV (int w, int h) {
+		print ("DEBUG: setFOV (" + w + ", " + h + ")");
+		if (ROTATE) {
+			int t = w;
+			w = h;
+			h = t;
+		}
+		
+		mmc.setProperty ("RCM", "C2 Field of view x", w);
+		mmc.setProperty ("RCM", "C2 Field of view y", h);
+	}
+	
+	public void moveToXY (double x, double y) {
+		double cx = getX ();
+		double cy = getY ();
+		double dist = Math.sqrt ((cx - x) *  (cx - x) + (cy - y) *  (cy - y));
+		// dist 12.4 = okay
+		// 
+		
+		double rx = -x * 1000;
+		double ry = y * 1000;
+		
+		xystage = mmc.getXYStageDevice ();
+		mmc.setXYPosition(xystage, rx, ry);
+		mmc.waitForDevice(xystage);
+		logXY ("moveTo " + (rx) + ", " + (ry));
+		double movement = Math.sqrt ((x - lastX) * (x - lastX) + (y - lastY) * (y - lastY));
+		odo += movement;
+		print ("odo = " + (((double) Math.round (odo * 1000)) / 1000.0) + " mm");
+		lastX = x;
+		lastY = y;
+	}
+	
+	public void zeroXY () {
+		mmc.setOriginXY (mmc.getXYStageDevice ());
+		lastX = 0.0;
+		lastY = 0.0;
+		logXY ("zero");
+	}
+	
+	public void setAF (boolean state) {
+		do_af = state;
+		print ("af = " + do_af);
+	}
+	
+	public void moveToZ (double z) {
+		zstage = mmc.getFocusDevice ();
+		
+		old_z = mmc.getPosition (zstage);
+		if (z == -1) {  // "-1" mean: dont change at all
+			z = old_z;
+		}
+		
+		mmc.setPosition(zstage, z);
+		mmc.waitForDevice(zstage);
+		logZ ("moveTo " + z);
+		
+		if (do_af) {
+			try {
+				afd = mmc.getAutoFocusDevice ();
+				mmc.fullFocus ();
+				mmc.waitForDevice(afd);
+			}
+			catch (Exception x) {
+				print ("AF failed: " + x.printStackTrace ());
+			}
+		}
+	}
+	
+	public double getX () {
+		xystage = mmc.getXYStageDevice ();
+		x = -mmc.getXPosition (xystage) / 1000;
+		return x;
+	}
+	
+	public double getY () {
+		xystage = mmc.getXYStageDevice ();
+		y = mmc.getYPosition (xystage) / 1000;
+		return y;
+	}
+	
+	public double getZ () {
+		zstage = mmc.getFocusDevice ();
+		z = mmc.getPosition (zstage);
+		return z;
+	}
+	
+	public void saveImage (ImagePlus imp, String path) {
+		File parent = new File (path).getParentFile ();
+		parent.mkdirs ();
+		FileSaver fs = new FileSaver(imp);
+		fs.saveAsTiff(path);
+		log ("Device.saveImage :: saved image as " + path);
+	}
+	
+	public ImagePlus snapImage (String wavelength, int x, int y, int w, int h) {
+		
+		// WARNING: snapImage currently ignores x and y !!!
+		
+		
+		store = mm.data ().createRAMDatastore ();
+		pipeline = mm.data ().copyApplicationPipeline (store, true);
+		
+		setFOV (w, h);
+		
+		list = mm.acquisitions ().snap ();
+		
+		coords = mm.data ().createCoords ("t=0,p=0,c=0,z=0");
+		img = list.get (0).copyAtCoords (coords);
+		pipeline.insertImage (img);
+		proc = store.getImage (coords);
+		
+		iproc = mm.data ().ij ().createProcessor(img);
+		if (iproc == null) {
+			print ("iproc == null");
+		}
+		
+		if (wavelength.equals ("405")) {
+			iproc.setRoi (new Rectangle (128, 128, 768, 768));
+		}
+		else if (wavelength.equals ("488")) {
+			iproc.setRoi (new Rectangle (1152, 128, 768, 768));
+		}
+		else if (wavelength.equals ("561")) {
+			iproc.setRoi (new Rectangle (1152, 1152, 768, 768));
+		}
+		else if (wavelength.equals ("640")) {
+			iproc.setRoi (new Rectangle (128, 1152, 768, 768));
+		}
+		else {
+			print ("snapImage: unknown wavelength: " + wavelength);
+			BOGUS ();
+		}
+		iproc = iproc.crop ();
+		
+		if ((w != 768) || (h != 768)) {
+			// crop to specified region (wavelength independent)
+			int cropx, cropy;
+			if (ROTATE) {
+				cropx = (768 - h) / 2;
+				cropy = (768 - w) / 2;
+				int t = w;
+				w = h;
+				h = t;
+			}
+			else {
+				cropx = (768 - w) / 2;
+				cropy = (768 - h) / 2;
+			}
+			//
+			
+			// apply correction offset
+			/*
+				Values for a and b are experimentally obtained with chroma slides.
+				Multiple strip widths were imaged.
+				Difference between expected and actual position of imaged strip were compared.
+			*/
+			double a = 1.0;
+			double b = 0.0;
+			if (wavelength.equals ("405")) {
+				a = -0.0448079;
+				b = 23.1391;
+			}
+			else if (wavelength.equals ("488")) {
+				a = -0.0449903;
+				b = 18.7665;
+			}
+			else if (wavelength.equals ("561")) {
+				a = -0.0438959;
+				b = 33.0019;
+			}
+			else if (wavelength.equals ("640")) {
+				print ("offset for 640 not yet implemented since laser is b0rked");
+			}
+			else {
+				print ("snapImage: unknown wavelength: " + wavelength);
+				BOGUS ();
+			}
+			int offset = Math.round (a * w + b);
+			cropx = cropx + offset;
+			
+			//
+			iproc.setRoi (new Rectangle (cropx, cropy, w, h));
+			iproc = iproc.crop ();
+		}
+		
+		if (ROTATE) {
+			iproc = iproc.rotateRight ();
+		}
+		
+		ImagePlus ip = (new ImagePlus ("tmp", iproc)).duplicate ();
+		
+		return ip;
+	}
+	
+	public String snapImageToFile (String wavelength, int x, int y, int w, int h) {
+		ImagePlus ip = snapImage (wavelength, x, y, w, h);
+		String path = "D:/robomick/latest-" + wavelength + ".tif";
+		saveImage (ip, path);
+		return path;
+	}
+	
+	public void convert16to8bit (String image16bit, String image8bit) {
+		print ("init");
+		ImagePlus imp = new ImagePlus (image16bit);
+		ImageProcessor ip = imp.getProcessor ();
+		imp.setProcessor (null, ip.convertToByte (true));
+		FileSaver fs = new FileSaver (imp);
+		fs.saveAsTiff (image8bit);
+	}
+	
+	
+	
+	//
+}
+
+/*
+	valid commands:
+	
+		"QUIT_SERVER"
+		@args: -
+		@return: "ACK"
+		
+		"MOVEXY"
+		@args: X Y
+		@return: "ACK"
+		
+		"ZEROXY"
+		@args: -
+		@return: "ACK"
+		
+		"MOVEZ"
+		@args: Z
+		@return: "ACK"
+		
+		"FIND_FOCUS"
+		@args:
+		@return: best focus
+		
+		"SET_AF"
+		@args: ON|OFF
+		@return: "ACK"
+		
+		"SNAP_IMAGE_TO_FILE"
+		@args: x_center y_center width height (currently unused)
+		  full image: 0 0 768 768 (default)
+		  upper half: 0 -192 768 384
+		  full height, half width centered: 0 0 384 768
+		@return: filename @ server
+		
+		"SET_SWEEP"
+		@args: 1|2
+		@return: "ACK"
+		
+		"SET_CHURCHWINDOW"
+		@args: 405|488|561|640
+		@return: "ACK"
+		
+		"SET_CHSELECT"
+		@args: 0|1 0|1 0|1 0|1
+		@return: "ACK"
+		
+		"SET_CHINTENSITY"
+		@args: i405 i488 i561 i640
+		@return: "ACK"
+		
+		"SET_FOV"
+		@args: w h
+		@return: "ACK"
+		
+		"GET_FILE"
+		@args: filename @ server
+		@return: -
+		
+		"GET_XY"
+		@args: -
+		@return: x y
+		
+		"GET_Z"
+		@args: -
+		@return: z
+	
+		"CONVERT_16_TO_8BIT"
+		@args: filename16bit filename8bit
+		@return: ACK
+	
+		"GET_ODO"
+		@args: -
+		@return: odo
+	
+	
+	
+*/
+
+class Worker implements Runnable {
+	private Socket s;
+	private Server server;
+	
+	public Worker (Socket _s, Server _server) {
+		s = _s;
+		server = _server;
+	}
+	
+	private DataInputStream getDataInputStream (Socket s) throws IOException {
+		return new DataInputStream (s.getInputStream ());
+	}
+	
+	private DataOutputStream getDataOutputStream (Socket s) throws IOException {
+		return new DataOutputStream (s.getOutputStream ());
+	}
+	
+	private String recvMsg (DataInputStream dis) throws IOException {
+		byte [] len = new byte [1];
+		dis.read (len, 0, 1);
+		
+		byte [] buffer = new byte [len [0]];
+		dis.read (buffer, 0, len [0]);
+		
+		String str = new String (buffer, StandardCharsets.UTF_8);
+		print ("recvMsg: " + str);
+		server.device ().log ("recvMsg: " + str);
+		
+		return str;
+	}
+	
+	private void sendMsg (DataOutputStream dos, String msg) throws IOException {
+		byte [] bytes = msg.getBytes (StandardCharsets.UTF_8);
+		if (bytes.length > 255) {
+			print ("sendMsg error :: length of msg > 255");
+			BOGUS ();
+		}
+		
+		byte [] len = new byte [1];
+		len [0] = (byte) bytes.length;
+		
+		print ("sendMsg: " + msg);
+		dos.write (len, 0, 1);
+		dos.write (bytes, 0, len [0]);
+	}
+	
+	private void recvFile (DataInputStream dis, String localfilename) throws IOException {
+		String msg;
+		
+		// recv filename
+		msg = recvMsg (dis);
+		String remotefilename = msg;
+		
+		// receive file length
+		msg = recvMsg (dis);
+		int filelength = Integer.parseInt (msg);
+		
+		// receive file data
+		FileOutputStream fos = new FileOutputStream (localfilename);
+		BufferedOutputStream bos = new BufferedOutputStream (fos);
+		
+		print ("Server.recvFile :: " + remotefilename + " -> " + localfilename + " (length = " + filelength + ")");
+		
+		int sum = 0;
+		int size = 1024;
+		do {
+			byte [] buffer = new byte [size];
+			size = Math.min (size, filelength - sum);
+			int bytes = dis.read (buffer, 0, size);
+			sum += bytes;
+			bos.write (buffer, 0, bytes);
+		} while (sum < filelength);
+		bos.close ();
+	}
+	
+	private void sendFile (DataOutputStream dos, String localfilename) throws IOException {
+		File f = new File (localfilename);
+		long len = f.length ();
+		String lenstr = "" + len;
+		
+		print ("Server.sendFile :: " + localfilename + " (length = " + len + ")");
+		
+		// send file name
+		sendMsg (dos, localfilename);
+		
+		// send file length
+		sendMsg (dos, lenstr);
+		
+		// send file data
+		BufferedInputStream bis = new BufferedInputStream (new FileInputStream (f));
+		int sum = 0;
+		int size = 1024;
+		do {
+			byte [] buffer = new byte [size];
+			int bytes = bis.read (buffer, 0, size);
+			sum += bytes;
+			dos.write (buffer, 0, bytes);
+		} while (sum < len);
+		bis.close ();
+	}
+	
+	private void processCommand (String str, DataInputStream dis, DataOutputStream dos) {
+		print ("processCommand :: cmd = " + str);
+		
+		if (str.equals ("QUIT_SERVER")) {
+			goquit = true;
+			sendMsg (dos, "ACK");
+		}
+		else if (str.equals ("FIND_FOCUS")) {
+			double zfocus = server.device ().findFocus ();
+			sendMsg (dos, "" + zfocus);
+		}
+		else if (str.equals ("ZEROXY")) {
+			server.device ().zeroXY ();
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("MOVEXY")) {
+			String [] seg = str.split (" ");
+			double x = Double.parseDouble (seg [1]);
+			double y = Double.parseDouble (seg [2]);
+			server.device ().moveToXY (x, y);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("MOVEZ")) {
+			String [] seg = str.split (" ");
+			double z = Double.parseDouble (seg [1]);
+			server.device ().moveToZ (z);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("SET_AF")) {
+			String [] seg = str.split (" ");
+			if (seg [1].equals ("ON")) {
+				server.device ().setAF (true);
+			}
+			else {
+				server.device ().setAF (false);
+			}
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("SNAP_IMAGE_TO_FILE")) {
+			String [] seg = str.split (" ");
+			int x = 0;
+			int y = 0;
+			int w = 768;
+			int h = 768;
+			if (seg.length == 5) {
+				x = Integer.parseInt (seg [1]);
+				y = Integer.parseInt (seg [2]);
+				w = Integer.parseInt (seg [3]);
+				h = Integer.parseInt (seg [4]);
+			}
+			
+			String path = server.device ().snapImageToFile (server.device ().currentWavelength, x, y, w, h);
+			sendMsg (dos, path);
+		}
+		else if (str.startsWith ("SET_SWEEP")) {
+			String [] seg = str.split (" ");
+			int sw = Integer.parseInt (seg [1]);
+			server.device ().setSweep (sw);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("SET_CHURCHWINDOW")) {
+			String [] seg = str.split (" ");
+			server.device ().setChurchWindow (seg [1]);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("SET_CHSELECT")) {
+			String [] seg = str.split (" ");
+			int [] sel = new int [4];
+			for (int i = 0; i < sel.length; i++) {
+				sel [i] = Integer.parseInt (seg [i + 1]);
+			}
+			server.device ().setChannelSelect (sel);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("SET_CHINTENSITY")) {
+			String [] seg = str.split (" ");
+			int [] its = new int [4];
+			for (int i = 0; i < its.length; i++) {
+				its [i] = Integer.parseInt (seg [i + 1]);
+			}
+			server.device ().setChannelIntensity (its);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("SET_FOV")) {
+			String [] seg = str.split (" ");
+			int w = Integer.parseInt (seg [1]);
+			int h = Integer.parseInt (seg [2]);
+			server.device ().setFOV (w, h);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("GET_FILE")) {
+			String [] seg = str.split (" ");
+			String filename = seg [1];
+			sendFile (dos, filename);
+		}
+		else if (str.startsWith ("GET_XY")) {
+			double x = server.device ().getX ();
+			double y = server.device ().getY ();
+			sendMsg (dos, "" + x + " " + y);
+		}
+		else if (str.startsWith ("GET_Z")) {
+			double z = server.device ().getZ ();
+			sendMsg (dos, "" + z);
+		}
+		else if (str.startsWith ("CONVERT_16_TO_8BIT")) {
+			String [] seg = str.split (" ");
+			String image16bit = seg [1];
+			String image8bit = seg [2];
+			server.device ().convert16to8bit (image16bit, image8bit);
+			sendMsg (dos, "ACK");
+		}
+		else if (str.startsWith ("GET_ODO")) {
+			String odoStr = "" + server.device ().odo;
+			sendMsg (dos, odoStr);
+		}
+		else {
+			print ("unknown command");
+			sendMsg (dos, "ERROR");
+		}
+	}
+	
+	public void run () {
+		DataInputStream dis = getDataInputStream (s);
+		DataOutputStream dos = getDataOutputStream (s);
+		
+		// receive command
+		msg = recvMsg (dis);
+		processCommand (msg, dis, dos);
+		
+		s.close ();
+	}
+}
+
+class Server {
+	private final static int port = 55557;
+	private boolean running = true;
+	private Device device;
+	
+	public Server () {
+		device = new Device ();
+	}
+	
+	public Device device () {
+		return device;
+	}
+	
+	public void run () throws Exception {
+		//print ("Server running");
+		device.log ("Server running");
+		ServerSocket ss = new ServerSocket (port, 1);
+		while (!goquit) {
+			Socket s = ss.accept ();
+			Thread w = new Thread (new Worker (s, this));
+			w.start ();
+			w.join ();
+		}
+		ss.close ();
+		device.log ("Server shut down");
+	}
+}
+
+
+server = new Server ();
+server.run ();
+
+
+
+
